@@ -5,6 +5,7 @@ use std::{
     future::Future,
     io::Write,
     net::{Ipv6Addr, SocketAddr},
+    str::FromStr,
     sync::{Arc, atomic::AtomicU16},
 };
 
@@ -928,7 +929,7 @@ async fn test_json_schema() {
         tokio::task::spawn_blocking(move || {
             Command::cargo_bin("oha")
                 .unwrap()
-                .args(["-n", "10", "--no-tui", "-j"])
+                .args(["-n", "10", "--no-tui", "--output-format", "json"])
                 .arg(format!("http://127.0.0.1:{port}/"))
                 .assert()
                 .get_output()
@@ -944,7 +945,14 @@ async fn test_json_schema() {
         tokio::task::spawn_blocking(move || {
             Command::cargo_bin("oha")
                 .unwrap()
-                .args(["-n", "10", "--no-tui", "-j", "--stats-success-breakdown"])
+                .args([
+                    "-n",
+                    "10",
+                    "--no-tui",
+                    "--output-format",
+                    "json",
+                    "--stats-success-breakdown",
+                ])
                 .arg(format!("http://127.0.0.1:{port}/"))
                 .assert()
                 .get_output()
@@ -972,6 +980,53 @@ async fn test_json_schema() {
             eprintln!("{error}");
         }
         panic!("JSON schema validation failed\n{output_json_stats_success_breakdown}");
+    }
+}
+
+#[tokio::test]
+async fn test_csv_output() {
+    let app = Router::new().route("/", get(|| async move { "Hello World" }));
+
+    let (listener, port) = bind_port().await;
+    tokio::spawn(async { axum::serve(listener, app).await });
+
+    let output_csv: String = String::from_utf8(
+        tokio::task::spawn_blocking(move || {
+            Command::cargo_bin("oha")
+                .unwrap()
+                .args(["-n", "5", "--no-tui", "--output-format", "csv"])
+                .arg(format!("http://127.0.0.1:{port}/"))
+                .assert()
+                .get_output()
+                .stdout
+                .clone()
+        })
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+
+    // Validate that we get CSV output in following format,
+    // header and one row for each request:
+    // DNS,DNS+dialup,request-duration,bytes,status,offset
+    // 0.000309806,0.001021632,0.002023073,11,200,0.002219628
+    // ...
+
+    let lines: Vec<&str> = output_csv.lines().collect();
+    assert_eq!(lines.len(), 6);
+    assert_eq!(
+        lines[0],
+        "DNS,DNS+dialup,request-duration,bytes,status,offset"
+    );
+    for line in lines.iter().skip(1) {
+        let parts: Vec<&str> = line.split(",").collect();
+        assert_eq!(parts.len(), 6);
+        assert!(f64::from_str(parts[0]).unwrap() > 0f64);
+        assert!(f64::from_str(parts[1]).unwrap() > 0f64);
+        assert!(f64::from_str(parts[2]).unwrap() > 0f64);
+        assert_eq!(usize::from_str(parts[3]).unwrap(), 11);
+        assert_eq!(u16::from_str(parts[4]).unwrap(), 200);
+        assert!(f64::from_str(parts[5]).unwrap() > 0f64);
     }
 }
 
